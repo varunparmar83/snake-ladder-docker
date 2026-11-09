@@ -1,0 +1,19 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t snake-ladder:${{ github.sha }} .
+
+      - name: Smoke test - does the app start?
+        run: |
+          docker run -d --name app -p 8080:80 snake-ladder:${{ github.sha }}
+          sleep 5
+          curl -f http://localhost:8080

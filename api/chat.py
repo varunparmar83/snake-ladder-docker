@@ -22,7 +22,8 @@ def get_answer(message):
 
     model = os.environ.get("OPENAI_MODEL", "gpt-5-nano")
     use_responses = os.environ.get("OPENAI_USE_RESPONSES", "false").lower() == "true"
-    llm = ChatOpenAI(model=model, timeout=30, max_retries=1, use_responses_api=use_responses)
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    llm = ChatOpenAI(model=model, api_key=api_key, timeout=30, max_retries=1, use_responses_api=use_responses)
     result = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=message)],
         config={
@@ -57,6 +58,14 @@ class handler(BaseHTTPRequestHandler):
         try:
             self._send(200, {"reply": get_answer(message)})
         except Exception as e:
-            traceback.print_exc()
+            print("bot error:", type(e).__name__, "cause:", type(e.__cause__).__name__)
             # TEMPORARY: "detail" is for debugging. Remove it once the bot works.
-            self._send(500, {"error": "bot error", "type": type(e).__name__, "detail": str(e)[:300]})
+            k = os.environ.get("OPENAI_API_KEY", "")
+            diag = {
+                "cause_type": type(e.__cause__).__name__,
+                "key_len": len(k),
+                "key_has_edge_whitespace": k != k.strip(),
+                "key_is_ascii": k.isascii(),
+                "key_starts_with_sk": k.startswith("sk-"),
+            }
+            self._send(500, {"error": "bot error", "type": type(e).__name__, "detail": str(e)[:300], "diag": diag})

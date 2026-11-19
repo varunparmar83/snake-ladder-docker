@@ -1,25 +1,37 @@
 import json
 import os
+import traceback
 from http.server import BaseHTTPRequestHandler
-
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
 
 SYSTEM_PROMPT = """You are Snakey, the helper bot inside a Snake and Ladder game.
 Only answer about the game: rules, dice odds, strategy, and what snakes and ladders do.
 Keep every answer under 4 sentences. If asked about anything else,
 politely steer the player back to the game."""
 
-MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-nano")
-USE_RESPONSES = os.environ.get("OPENAI_USE_RESPONSES", "false").lower() == "true"
-
-llm = ChatOpenAI(model=MODEL, timeout=30, use_responses_api=USE_RESPONSES)
-
 
 def to_text(content):
     if isinstance(content, str):
         return content
     return "".join(b.get("text", "") for b in content if isinstance(b, dict))
+
+
+def get_answer(message):
+    # imports and client setup happen here so any error is caught and reported
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    model = os.environ.get("OPENAI_MODEL", "gpt-5-nano")
+    use_responses = os.environ.get("OPENAI_USE_RESPONSES", "false").lower() == "true"
+    llm = ChatOpenAI(model=model, timeout=30, max_retries=1, use_responses_api=use_responses)
+    result = llm.invoke(
+        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=message)],
+        config={
+            "run_name": "snake-chat",
+            "tags": ["snake-ladder"],
+            "metadata": {"source": "game-widget"},
+        },
+    )
+    return to_text(result.content)
 
 
 class handler(BaseHTTPRequestHandler):
@@ -43,16 +55,8 @@ class handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "message must be 1-300 characters"})
 
         try:
-            result = llm.invoke(
-                [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=message)],
-                config={
-                    "run_name": "snake-chat",
-                    "tags": ["snake-ladder"],
-                    "metadata": {"source": "game-widget"},
-                },
-            )
-            self._send(200, {"reply": to_text(result.content)})
+            self._send(200, {"reply": get_answer(message)})
         except Exception as e:
-            import traceback
             traceback.print_exc()
-            self._send(500, {"error": "bot error", "type": type(e).__name__})
+            # TEMPORARY: "detail" is for debugging. Remove it once the bot works.
+            self._send(500, {"error": "bot error", "type": type(e).__name__, "detail": str(e)[:300]})

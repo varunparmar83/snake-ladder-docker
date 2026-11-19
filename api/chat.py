@@ -52,5 +52,7 @@ class handler(BaseHTTPRequestHandler):
                 },
             )
             self._send(200, {"reply": to_text(result.content)})
-        except Exception:
-            self._send(500, {"error": "bot error"})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._send(500, {"error": "bot error", "type": type(e).__name__})

@@ -20,8 +20,8 @@ def get_answer(message):
     from langchain_openai import ChatOpenAI
     from langchain_core.messages import SystemMessage, HumanMessage
 
-    model = os.environ.get("OPENAI_MODEL", "gpt-5-nano")
-    use_responses = os.environ.get("OPENAI_USE_RESPONSES", "false").lower() == "true"
+    model = (os.environ.get("OPENAI_MODEL") or "gpt-5-nano").strip()
+    use_responses = os.environ.get("OPENAI_USE_RESPONSES", "false").strip().lower() == "true"
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     llm = ChatOpenAI(model=model, api_key=api_key, timeout=30, max_retries=1, use_responses_api=use_responses)
     result = llm.invoke(
@@ -67,5 +67,6 @@ class handler(BaseHTTPRequestHandler):
                 "key_has_edge_whitespace": k != k.strip(),
                 "key_is_ascii": k.isascii(),
                 "key_starts_with_sk": k.startswith("sk-"),
+                "model_repr": repr(os.environ.get("OPENAI_MODEL")),
             }
             self._send(500, {"error": "bot error", "type": type(e).__name__, "detail": str(e)[:300], "diag": diag})

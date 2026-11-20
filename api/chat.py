@@ -23,18 +23,26 @@ def to_text(content):
 
 
 def get_answer(message):
-    from langchain_openai import ChatOpenAI
+    from langchain_litellm import ChatLiteLLM
     from langchain_core.messages import SystemMessage, HumanMessage
 
-    model = (os.environ.get("OPENAI_MODEL") or "gpt-5-nano").strip()
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    llm = ChatOpenAI(model=model, api_key=api_key, timeout=30, max_retries=1)
+    # "provider/model", e.g. openai/gpt-5-nano. LiteLLM picks the provider from the prefix.
+    model = (os.environ.get("LLM_MODEL") or "openai/gpt-5-nano").strip()
+    # Key for the chosen provider. Defaults to your existing OpenAI key.
+    api_key = (os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+
+    llm = ChatLiteLLM(
+        model=model,
+        api_key=api_key,
+        request_timeout=30,
+        max_retries=1,
+    )
     result = llm.invoke(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=message)],
         config={
             "run_name": "snake-chat",
-            "tags": ["snake-ladder"],
-            "metadata": {"source": "game-widget"},
+            "tags": ["snake-ladder", "litellm"],
+            "metadata": {"source": "game-widget", "model": model},
         },
     )
     return to_text(result.content)
@@ -63,6 +71,5 @@ class handler(BaseHTTPRequestHandler):
         try:
             self._send(200, {"reply": get_answer(message)})
         except Exception as e:
-            # Log the details privately (Vercel logs), never send them to visitors.
             print("bot error:", type(e).__name__, str(e)[:300])
             self._send(500, {"error": "bot error"})

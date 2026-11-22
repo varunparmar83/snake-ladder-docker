@@ -1,3 +1,4 @@
 langchain-litellm
 langchain-core
 langsmith
+langchain-mcp-adapters

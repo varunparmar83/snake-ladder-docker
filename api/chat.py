@@ -46,6 +46,77 @@ def make_llm():
     return llm, model
 
 
+class McpClient:
+    """Tiny MCP client over HTTP (JSON-RPC 2.0): initialize, tools/list, tools/call."""
+
+    def __init__(self, url, timeout=20):
+        self.url = url
+        self.timeout = timeout
+        self.session_id = None
+        self._next_id = 0
+
+    async def _rpc(self, http, method, params=None, notify=False):
+        payload = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            payload["params"] = params
+        if not notify:
+            self._next_id += 1
+            payload["id"] = self._next_id
+        headers = {"Accept": "application/json, text/event-stream"}
+        if self.session_id:
+            headers["Mcp-Session-Id"] = self.session_id
+        resp = await http.post(self.url, json=payload, headers=headers)
+        resp.raise_for_status()
+        if resp.headers.get("Mcp-Session-Id"):
+            self.session_id = resp.headers["Mcp-Session-Id"]
+        if notify or resp.status_code == 202 or not resp.content:
+            return None
+        if "text/event-stream" in resp.headers.get("content-type", ""):
+            last = None
+            for line in resp.text.splitlines():
+                if line.startswith("data:"):
+                    last = json.loads(line[5:].strip())
+            data = last or {}
+        else:
+            data = resp.json()
+        if "error" in data:
+            raise RuntimeError("MCP error: " + str(data["error"].get("message")))
+        return data.get("result")
+
+    async def load_tools(self):
+        """Handshake with the server and return its tools as LangChain tools."""
+        import httpx
+        from langchain_core.tools import StructuredTool, ToolException
+
+        http = httpx.AsyncClient(timeout=self.timeout)
+        await self._rpc(http, "initialize", {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "snakey-chat", "version": "1.0.0"},
+        })
+        await self._rpc(http, "notifications/initialized", notify=True)
+        listed = await self._rpc(http, "tools/list", {})
+
+        def wrap(spec):
+            async def run(**kwargs):
+                result = await self._rpc(http, "tools/call", {"name": spec["name"], "arguments": kwargs})
+                text = "".join(b.get("text", "") for b in result.get("content", []))
+                if result.get("isError"):
+                    raise ToolException(text)
+                return text
+
+            return StructuredTool.from_function(
+                coroutine=run,
+                name=spec["name"],
+                description=spec.get("description", ""),
+                args_schema=spec.get("inputSchema") or {"type": "object", "properties": {}},
+                handle_tool_error=True,
+            )
+
+        tools = [wrap(t) for t in listed.get("tools", [])]
+        return tools, http
+
+
 def plain_answer(message):
     from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -62,7 +133,6 @@ def plain_answer(message):
 
 
 async def mcp_flow(message, config=None):
-    from langchain_mcp_adapters.client import MultiServerMCPClient
     from langchain_core.messages import SystemMessage, HumanMessage
 
     url = os.environ.get("MCP_SERVER_URL", "").strip()
@@ -72,29 +142,31 @@ async def mcp_flow(message, config=None):
     llm, _model = make_llm()
 
     # 1. Connect to the separate MCP server and ask which tools it has.
-    client = MultiServerMCPClient({"dice": {"url": url, "transport": "streamable_http"}})
-    tools = await client.get_tools()
+    tools, http = await McpClient(url).load_tools()
     by_name = {t.name: t for t in tools}
 
-    # 2. Let the model pick a tool and its arguments (it must pick one).
-    msgs = [SystemMessage(content=MCP_SYSTEM_PROMPT), HumanMessage(content=message)]
-    ai = await llm.bind_tools(tools, tool_choice="required").ainvoke(msgs, config=config)
-    if not ai.tool_calls:
-        return {"reply": to_text(ai.content), "tools": []}
-    msgs.append(ai)
+    try:
+        # 2. Let the model pick a tool and its arguments (it must pick one).
+        msgs = [SystemMessage(content=MCP_SYSTEM_PROMPT), HumanMessage(content=message)]
+        ai = await llm.bind_tools(tools, tool_choice="required").ainvoke(msgs, config=config)
+        if not ai.tool_calls:
+            return {"reply": to_text(ai.content), "tools": []}
+        msgs.append(ai)
 
-    # 3. Run each chosen tool on the MCP server (each shows up as a tool run in LangSmith).
-    used = []
-    for call in ai.tool_calls:
-        tool = by_name.get(call["name"])
-        if tool is None:
-            continue
-        msgs.append(await tool.ainvoke(call, config=config))
-        used.append(call["name"])
+        # 3. Run each chosen tool on the MCP server (each shows up as a tool run in LangSmith).
+        used = []
+        for call in ai.tool_calls:
+            tool = by_name.get(call["name"])
+            if tool is None:
+                continue
+            msgs.append(await tool.ainvoke(call, config=config))
+            used.append(call["name"])
 
-    # 4. Let the model explain the tool result to the player.
-    final = await llm.ainvoke(msgs, config=config)
-    return {"reply": to_text(final.content), "tools": used}
+        # 4. Let the model explain the tool result to the player.
+        final = await llm.ainvoke(msgs, config=config)
+        return {"reply": to_text(final.content), "tools": used}
+    finally:
+        await http.aclose()
 
 
 def mcp_answer(message):
